@@ -25,26 +25,56 @@ func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetr
 	if m.store != nil {
 		rm := request.GetResourceMetrics()
 
+		// Map all 5 metric types.
 		gaugeMetadata, gaugeRows := MapGaugeRows(rm)
+		sumMetadata, sumRows := MapSumRows(rm)
+		histMetadata, histRows := MapHistogramRows(rm)
+		expHistMetadata, expHistRows := MapExponentialHistogramRows(rm)
+		summaryMetadata, summaryRows := MapSummaryRows(rm)
+
+		// Deduplicate metadata across all types.
+		seen := make(map[uint64]struct{})
+		var allMetadata []MetadataRow
+		for _, batch := range [][]MetadataRow{gaugeMetadata, sumMetadata, histMetadata, expHistMetadata, summaryMetadata} {
+			for _, md := range batch {
+				if _, ok := seen[md.MetricFingerprint]; !ok {
+					seen[md.MetricFingerprint] = struct{}{}
+					allMetadata = append(allMetadata, md)
+				}
+			}
+		}
 		if len(gaugeMetadata) > 0 {
 			if err := m.store.InsertMetadata(ctx, gaugeMetadata); err != nil {
+		// Insert metadata first.
+		if len(allMetadata) > 0 {
+			if err := m.store.InsertMetadata(ctx, allMetadata); err != nil {
 				return nil, err
 			}
 		}
+
+		// Insert data points for each type that has rows.
 		if len(gaugeRows) > 0 {
 			if err := m.store.InsertGauge(ctx, gaugeRows); err != nil {
 				return nil, err
 			}
 		}
-
-		sumMetadata, sumRows := MapSumRows(rm)
-		if len(sumMetadata) > 0 {
-			if err := m.store.InsertMetadata(ctx, sumMetadata); err != nil {
+		if len(sumRows) > 0 {
+			if err := m.store.InsertSum(ctx, sumRows); err != nil {
 				return nil, err
 			}
 		}
-		if len(sumRows) > 0 {
-			if err := m.store.InsertSum(ctx, sumRows); err != nil {
+		if len(histRows) > 0 {
+			if err := m.store.InsertHistogram(ctx, histRows); err != nil {
+				return nil, err
+			}
+		}
+		if len(expHistRows) > 0 {
+			if err := m.store.InsertExponentialHistogram(ctx, expHistRows); err != nil {
+				return nil, err
+			}
+		}
+		if len(summaryRows) > 0 {
+			if err := m.store.InsertSummary(ctx, summaryRows); err != nil {
 				return nil, err
 			}
 		}
