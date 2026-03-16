@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net"
+	"os/signal"
+	"syscall"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -20,15 +23,19 @@ import (
 var (
 	listenAddr            = flag.String("listenAddr", "localhost:4317", "The listen address")
 	maxReceiveMessageSize = flag.Int("maxReceiveMessageSize", 16777216, "The max message size in bytes the server can receive")
+	clickhouseAddr        = flag.String("clickhouse-addr", "localhost:9000", "ClickHouse native protocol address")
+	clickhouseDatabase    = flag.String("clickhouse-database", "default", "ClickHouse database name")
+	clickhouseUsername    = flag.String("clickhouse-username", "default", "ClickHouse username")
+	clickhousePassword    = flag.String("clickhouse-password", "test", "ClickHouse password")
 )
 
 const name = "dash0.com/otlp-log-processor-backend"
 
 var (
-	meter                       = otel.Meter(name)
-	logger                      = otelslog.NewLogger(name)
-	metricsReceivedCounter      metric.Int64Counter
-	metadataRowsInsertedCounter metric.Int64Counter
+	meter                        = otel.Meter(name)
+	logger                       = otelslog.NewLogger(name)
+	metricsReceivedCounter       metric.Int64Counter
+	metadataRowsInsertedCounter  metric.Int64Counter
 	datapointRowsInsertedCounter metric.Int64Counter
 )
 
@@ -77,10 +84,26 @@ func run() (err error) {
 
 	flag.Parse()
 
-	slog.Debug("Starting listener", slog.String("listenAddr", *listenAddr))
+	// Listen for SIGINT/SIGTERM for graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Connect to ClickHouse and create tables.
+	store, err := NewClickHouseMetricsStore(ctx, *clickhouseAddr, *clickhouseDatabase, *clickhouseUsername, *clickhousePassword)
+	if err != nil {
+		return fmt.Errorf("connecting to clickhouse: %w", err)
+	}
+	defer store.Close()
+
+	if err := store.CreateTables(ctx); err != nil {
+		return fmt.Errorf("creating tables: %w", err)
+	}
+
+	slog.Info("Connected to ClickHouse", slog.String("addr", *clickhouseAddr))
+
 	listener, err := net.Listen("tcp", *listenAddr)
 	if err != nil {
-		return err
+		return fmt.Errorf("listening on %s: %w", *listenAddr, err)
 	}
 
 	grpcServer := grpc.NewServer(
@@ -88,9 +111,16 @@ func run() (err error) {
 		grpc.MaxRecvMsgSize(*maxReceiveMessageSize),
 		grpc.Creds(insecure.NewCredentials()),
 	)
-	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(*listenAddr, nil))
+	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(*listenAddr, store))
 
-	slog.Debug("Starting gRPC server")
+	// Graceful shutdown in a separate goroutine.
+	go func() {
+		<-ctx.Done()
+		slog.Info("Shutting down gRPC server")
+		grpcServer.GracefulStop()
+	}()
+
+	slog.Info("Starting gRPC server", slog.String("listenAddr", *listenAddr))
 
 	return grpcServer.Serve(listener)
 }

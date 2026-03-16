@@ -1,6 +1,6 @@
 MODULE := dash0.com/otlp-log-processor-backend
 
-.PHONY: build run test test-integration test-all fmt vet lint tidy clean
+.PHONY: build run test test-integration test-all bench fmt vet lint tidy clean docker-up docker-down
 
 build:
 	go build ./...
@@ -31,6 +31,11 @@ lint: vet
 
 tidy:
 	go mod tidy
+
+	docker compose up -d
+
+docker-down:
+	docker compose down
 
 clean:
 	go clean ./...
