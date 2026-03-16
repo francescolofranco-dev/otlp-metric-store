@@ -29,7 +29,7 @@ var (
 	clickhousePassword    = flag.String("clickhouse-password", "test", "ClickHouse password")
 )
 
-const name = "dash0.com/otlp-log-processor-backend"
+const name = "dash0.com/otlp-metrics-processor-backend"
 
 var (
 	meter                        = otel.Meter(name)
