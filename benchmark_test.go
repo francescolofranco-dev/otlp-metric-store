@@ -86,15 +86,15 @@ func buildSyntheticSumResourceMetrics(n int) []*metricspb.ResourceMetrics {
 
 func BenchmarkComputeFingerprint(b *testing.B) {
 	resAttrs := map[string]string{
-		"service.name":             "bench-service",
-		"host.name":               "bench-host-01",
-		"k8s.pod.name":            "bench-pod-abc123",
-		"k8s.namespace":           "production",
-		"deployment.environment":  "prod",
+		"service.name":           "bench-service",
+		"host.name":              "bench-host-01",
+		"k8s.pod.name":           "bench-pod-abc123",
+		"k8s.namespace":          "production",
+		"deployment.environment": "prod",
 	}
 	scopeAttrs := map[string]string{
-		"library":                  "otel-go",
-		"telemetry.sdk.language":  "go",
+		"library":                "otel-go",
+		"telemetry.sdk.language": "go",
 	}
 	dpAttrs := map[string]string{
 		"cpu":    "0",
