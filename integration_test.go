@@ -298,7 +298,7 @@ func TestGRPCExport_OneGaugeDataPoint_LandsInClickHouseViaEndToEnd(t *testing.T)
 	// Start gRPC server wired to the ClickHouse store.
 	lis := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()
-	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer("bufconn", store))
+	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(store))
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Printf("error serving server: %v", err)

@@ -111,7 +111,7 @@ func run() (err error) {
 		grpc.MaxRecvMsgSize(*maxReceiveMessageSize),
 		grpc.Creds(insecure.NewCredentials()),
 	)
-	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(*listenAddr, store))
+	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(store))
 
 	// Graceful shutdown in a separate goroutine.
 	go func() {

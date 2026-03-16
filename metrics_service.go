@@ -9,14 +9,13 @@ import (
 )
 
 type dash0MetricsServiceServer struct {
-	addr  string
 	store MetricsStore
 
 	colmetricspb.UnimplementedMetricsServiceServer
 }
 
-func newServer(addr string, store MetricsStore) colmetricspb.MetricsServiceServer {
-	return &dash0MetricsServiceServer{addr: addr, store: store}
+func newServer(store MetricsStore) colmetricspb.MetricsServiceServer {
+	return &dash0MetricsServiceServer{store: store}
 }
 
 func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
