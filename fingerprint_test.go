@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-func TestComputeFingerprint_Deterministic(t *testing.T) {
+func TestComputeFingerprint_SameInput_ProducesSameHash(t *testing.T) {
 	attrs := map[string]string{"host": "web-1", "region": "us-east-1"}
 	scopeAttrs := map[string]string{"library": "otel-go"}
 
@@ -14,7 +14,7 @@ func TestComputeFingerprint_Deterministic(t *testing.T) {
 	}
 }
 
-func TestComputeFingerprint_MapKeyOrderIndependent(t *testing.T) {
+func TestComputeFingerprint_DifferentMapInsertionOrder_ProducesSameHash(t *testing.T) {
 	// Build two maps with the same entries added in different order.
 	m1 := map[string]string{"a": "1", "b": "2", "c": "3"}
 	m2 := map[string]string{"c": "3", "a": "1", "b": "2"}
@@ -27,7 +27,7 @@ func TestComputeFingerprint_MapKeyOrderIndependent(t *testing.T) {
 	}
 }
 
-func TestComputeFingerprint_DifferentInputsDiffer(t *testing.T) {
+func TestComputeFingerprint_OneFieldChanged_ProducesDifferentHash(t *testing.T) {
 	base := func() uint64 {
 		return computeFingerprint(
 			"svc", "metric", "unit", "desc",
@@ -63,7 +63,7 @@ func TestComputeFingerprint_DifferentInputsDiffer(t *testing.T) {
 	}
 }
 
-func TestComputeFingerprint_EmptyFields(t *testing.T) {
+func TestComputeFingerprint_AllFieldsEmpty_ProducesNonZeroHash(t *testing.T) {
 	fp := computeFingerprint("", "", "", "", nil, nil, nil, "", "")
 	if fp == 0 {
 		t.Fatal("fingerprint of all-empty inputs should be non-zero")

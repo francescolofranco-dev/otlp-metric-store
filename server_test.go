@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestMetricsServiceServer_Export(t *testing.T) {
+func TestExport_NilStore(t *testing.T) {
 	ctx := context.Background()
 
 	client, closer := server()
@@ -28,7 +28,7 @@ func TestMetricsServiceServer_Export(t *testing.T) {
 		in       *colmetricspb.ExportMetricsServiceRequest
 		expected expectation
 	}{
-		"Must_Success": {
+		"EmptyResourceMetrics_ReturnsEmptyResponse": {
 			in: &colmetricspb.ExportMetricsServiceRequest{
 				ResourceMetrics: []*otelmetrics.ResourceMetrics{
 					{

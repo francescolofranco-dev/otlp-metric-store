@@ -64,7 +64,7 @@ func setupClickHouse(t *testing.T) (*ClickHouseMetricsStore, func()) {
 	return store, cleanup
 }
 
-func TestCreateTables(t *testing.T) {
+func TestCreateTables_AllSixDDLs_TablesExistInClickHouse(t *testing.T) {
 	store, cleanup := setupClickHouse(t)
 	defer cleanup()
 
@@ -95,7 +95,7 @@ func TestCreateTables(t *testing.T) {
 	}
 }
 
-func TestInsertGauge(t *testing.T) {
+func TestInsertGauge_OneDataPoint_LandsInClickHouseWithCorrectValues(t *testing.T) {
 	store, cleanup := setupClickHouse(t)
 	defer cleanup()
 
@@ -173,7 +173,7 @@ func TestInsertGauge(t *testing.T) {
 	}
 }
 
-func TestInsertSum(t *testing.T) {
+func TestInsertSum_CumulativeMonotonic_LandsInClickHouseWithCorrectValues(t *testing.T) {
 	store, cleanup := setupClickHouse(t)
 	defer cleanup()
 
@@ -264,7 +264,7 @@ func TestInsertSum(t *testing.T) {
 	}
 }
 
-func TestGRPCToClickHouse(t *testing.T) {
+func TestGRPCExport_OneGaugeDataPoint_LandsInClickHouseViaEndToEnd(t *testing.T) {
 	store, cleanup := setupClickHouse(t)
 	defer cleanup()
 
