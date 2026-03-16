@@ -32,6 +32,10 @@ lint: vet
 tidy:
 	go mod tidy
 
+bench:
+	go test -bench=. -benchmem -count=3 ./...
+
+docker-up:
 	docker compose up -d
 
 docker-down:
