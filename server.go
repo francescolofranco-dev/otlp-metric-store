@@ -10,6 +10,7 @@ import (
 	"net"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -113,11 +114,21 @@ func run() (err error) {
 	)
 	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(store))
 
-	// Graceful shutdown in a separate goroutine.
+	// Graceful shutdown in a separate goroutine with a hard deadline.
 	go func() {
 		<-ctx.Done()
 		slog.Info("Shutting down gRPC server")
-		grpcServer.GracefulStop()
+		done := make(chan struct{})
+		go func() {
+			grpcServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			slog.Warn("Graceful shutdown timed out, forcing stop")
+			grpcServer.Stop()
+		}
 	}()
 
 	slog.Info("Starting gRPC server", slog.String("listenAddr", *listenAddr))
