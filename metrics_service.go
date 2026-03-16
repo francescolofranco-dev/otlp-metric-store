@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 )
+
+// insertErr logs the error and returns it wrapped with context for the gRPC caller.
+func insertErr(ctx context.Context, table string, err error) error {
+	slog.ErrorContext(ctx, "Failed to insert rows", slog.String("table", table), slog.String("error", err.Error()))
+	return fmt.Errorf("inserting into %s: %w", table, err)
+}
 
 type dash0MetricsServiceServer struct {
 	store MetricsStore
@@ -49,34 +56,34 @@ func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetr
 		// Insert metadata first.
 		if len(allMetadata) > 0 {
 			if err := m.store.InsertMetadata(ctx, allMetadata); err != nil {
-				return nil, err
+				return nil, insertErr(ctx, "metric_metadata", err)
 			}
 		}
 
 		// Insert data points for each type that has rows.
 		if len(gaugeRows) > 0 {
 			if err := m.store.InsertGauge(ctx, gaugeRows); err != nil {
-				return nil, err
+				return nil, insertErr(ctx, "otel_metrics_gauge", err)
 			}
 		}
 		if len(sumRows) > 0 {
 			if err := m.store.InsertSum(ctx, sumRows); err != nil {
-				return nil, err
+				return nil, insertErr(ctx, "otel_metrics_sum", err)
 			}
 		}
 		if len(histRows) > 0 {
 			if err := m.store.InsertHistogram(ctx, histRows); err != nil {
-				return nil, err
+				return nil, insertErr(ctx, "otel_metrics_histogram", err)
 			}
 		}
 		if len(expHistRows) > 0 {
 			if err := m.store.InsertExponentialHistogram(ctx, expHistRows); err != nil {
-				return nil, err
+				return nil, insertErr(ctx, "otel_metrics_exponential_histogram", err)
 			}
 		}
 		if len(summaryRows) > 0 {
 			if err := m.store.InsertSummary(ctx, summaryRows); err != nil {
-				return nil, err
+				return nil, insertErr(ctx, "otel_metrics_summary", err)
 			}
 		}
 
