@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 )
@@ -43,8 +44,9 @@ func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetr
 				}
 			}
 		}
-		if len(gaugeMetadata) > 0 {
-			if err := m.store.InsertMetadata(ctx, gaugeMetadata); err != nil {
+
+		start := time.Now()
+
 		// Insert metadata first.
 		if len(allMetadata) > 0 {
 			if err := m.store.InsertMetadata(ctx, allMetadata); err != nil {
@@ -78,6 +80,22 @@ func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetr
 				return nil, err
 			}
 		}
+
+		duration := time.Since(start)
+		totalDatapoints := int64(len(gaugeRows) + len(sumRows) + len(histRows) + len(expHistRows) + len(summaryRows))
+
+		slog.InfoContext(ctx, "Inserted metrics",
+			slog.Int("gauge_datapoints", len(gaugeRows)),
+			slog.Int("sum_datapoints", len(sumRows)),
+			slog.Int("histogram_datapoints", len(histRows)),
+			slog.Int("exp_histogram_datapoints", len(expHistRows)),
+			slog.Int("summary_datapoints", len(summaryRows)),
+			slog.Int("metadata_rows", len(allMetadata)),
+			slog.Duration("duration", duration),
+		)
+
+		metadataRowsInsertedCounter.Add(ctx, int64(len(allMetadata)))
+		datapointRowsInsertedCounter.Add(ctx, totalDatapoints)
 	}
 
 	return &colmetricspb.ExportMetricsServiceResponse{}, nil

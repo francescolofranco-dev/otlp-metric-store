@@ -25,9 +25,11 @@ var (
 const name = "dash0.com/otlp-log-processor-backend"
 
 var (
-	meter                  = otel.Meter(name)
-	logger                 = otelslog.NewLogger(name)
-	metricsReceivedCounter metric.Int64Counter
+	meter                       = otel.Meter(name)
+	logger                      = otelslog.NewLogger(name)
+	metricsReceivedCounter      metric.Int64Counter
+	metadataRowsInsertedCounter metric.Int64Counter
+	datapointRowsInsertedCounter metric.Int64Counter
 )
 
 func init() {
@@ -35,6 +37,18 @@ func init() {
 	metricsReceivedCounter, err = meter.Int64Counter("com.dash0.homeexercise.metrics.received",
 		metric.WithDescription("The number of metrics received by otlp-metrics-processor-backend"),
 		metric.WithUnit("{metric}"))
+	if err != nil {
+		panic(err)
+	}
+	metadataRowsInsertedCounter, err = meter.Int64Counter("com.dash0.homeexercise.metadata.rows.inserted",
+		metric.WithDescription("The number of metadata rows inserted into ClickHouse"),
+		metric.WithUnit("{row}"))
+	if err != nil {
+		panic(err)
+	}
+	datapointRowsInsertedCounter, err = meter.Int64Counter("com.dash0.homeexercise.datapoint.rows.inserted",
+		metric.WithDescription("The number of data point rows inserted into ClickHouse"),
+		metric.WithUnit("{row}"))
 	if err != nil {
 		panic(err)
 	}
