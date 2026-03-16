@@ -67,56 +67,235 @@ func numberDataPointValue(dp *metricspb.NumberDataPoint) float64 {
 	}
 }
 
-// MapGaugeRows converts ResourceMetrics into MetadataRows and slim GaugeRows.
-// TODO: metadata extraction will be implemented in a follow-up change.
-func MapGaugeRows(resourceMetrics []*metricspb.ResourceMetrics) ([]MetadataRow, []GaugeRow) {
-	var metadataRows []MetadataRow
-	var gaugeRows []GaugeRow
-	for _, rm := range resourceMetrics {
-		for _, sm := range rm.GetScopeMetrics() {
-			for _, metric := range sm.GetMetrics() {
-				gauge := metric.GetGauge()
-				if gauge == nil {
-					continue
-				}
-				for _, dp := range gauge.GetDataPoints() {
-					gaugeRows = append(gaugeRows, GaugeRow{
-						StartTimeUnix: nanosToTime(dp.GetStartTimeUnixNano()),
-						TimeUnix:      nanosToTime(dp.GetTimeUnixNano()),
-						Value:         numberDataPointValue(dp),
-						Flags:         dp.GetFlags(),
-					})
-				}
-			}
-		}
-	}
-	return metadataRows, gaugeRows
+// dataPointMapper defines how to extract data points from a metric and build typed rows.
+type dataPointMapper[DP any, Row any] struct {
+	getDataPoints func(*metricspb.Metric) []DP
+	getAttributes func(DP) []*commonpb.KeyValue
+	buildRow      func(uint64, DP, *metricspb.Metric) Row
 }
 
-// MapSumRows converts ResourceMetrics into MetadataRows and slim SumRows.
-// TODO: metadata extraction will be implemented in a follow-up change.
-func MapSumRows(resourceMetrics []*metricspb.ResourceMetrics) ([]MetadataRow, []SumRow) {
+// mapMetricRows is the generic core of all Map*Rows functions. It walks the
+// resource/scope/metric hierarchy, deduplicates metadata by fingerprint, and
+// delegates type-specific work to the mapper callbacks.
+func mapMetricRows[DP any, Row any](
+	resourceMetrics []*metricspb.ResourceMetrics,
+	m dataPointMapper[DP, Row],
+) ([]MetadataRow, []Row) {
+	now := time.Now()
+	seen := make(map[uint64]struct{})
 	var metadataRows []MetadataRow
-	var sumRows []SumRow
+	var dataRows []Row
+
 	for _, rm := range resourceMetrics {
+		svcName := serviceName(rm.GetResource())
+		resAttrs := kvToMap(rm.GetResource().GetAttributes())
+		resSchemaUrl := rm.GetSchemaUrl()
+
 		for _, sm := range rm.GetScopeMetrics() {
+			scope := sm.GetScope()
+			scopeAttrs := kvToMap(scope.GetAttributes())
+
 			for _, metric := range sm.GetMetrics() {
-				sum := metric.GetSum()
-				if sum == nil {
-					continue
-				}
-				for _, dp := range sum.GetDataPoints() {
-					sumRows = append(sumRows, SumRow{
-						StartTimeUnix:          nanosToTime(dp.GetStartTimeUnixNano()),
-						TimeUnix:               nanosToTime(dp.GetTimeUnixNano()),
-						Value:                  numberDataPointValue(dp),
-						Flags:                  dp.GetFlags(),
-						AggregationTemporality: int32(sum.GetAggregationTemporality()),
-						IsMonotonic:            sum.GetIsMonotonic(),
-					})
+				for _, dp := range m.getDataPoints(metric) {
+					dpAttrs := kvToMap(m.getAttributes(dp))
+					fp := computeFingerprint(
+						svcName, metric.GetName(), metric.GetUnit(), metric.GetDescription(),
+						resAttrs, scopeAttrs, dpAttrs,
+						scope.GetName(), scope.GetVersion(),
+					)
+					if _, ok := seen[fp]; !ok {
+						seen[fp] = struct{}{}
+						metadataRows = append(metadataRows, MetadataRow{
+							MetricFingerprint:     fp,
+							ServiceName:           svcName,
+							MetricName:            metric.GetName(),
+							MetricDescription:     metric.GetDescription(),
+							MetricUnit:            metric.GetUnit(),
+							ResourceAttributes:    resAttrs,
+							ResourceSchemaUrl:     resSchemaUrl,
+							ScopeName:             scope.GetName(),
+							ScopeVersion:          scope.GetVersion(),
+							ScopeAttributes:       scopeAttrs,
+							ScopeDroppedAttrCount: scope.GetDroppedAttributesCount(),
+							ScopeSchemaUrl:        sm.GetSchemaUrl(),
+							Attributes:            dpAttrs,
+							LastSeen:              now,
+						})
+					}
+					dataRows = append(dataRows, m.buildRow(fp, dp, metric))
 				}
 			}
 		}
 	}
-	return metadataRows, sumRows
+	return metadataRows, dataRows
+}
+
+// --- Gauge ---
+
+var gaugeMapper = dataPointMapper[*metricspb.NumberDataPoint, GaugeRow]{
+	getDataPoints: func(m *metricspb.Metric) []*metricspb.NumberDataPoint {
+		if g := m.GetGauge(); g != nil {
+			return g.GetDataPoints()
+		}
+		return nil
+	},
+	getAttributes: func(dp *metricspb.NumberDataPoint) []*commonpb.KeyValue {
+		return dp.GetAttributes()
+	},
+	buildRow: func(fp uint64, dp *metricspb.NumberDataPoint, _ *metricspb.Metric) GaugeRow {
+		return GaugeRow{
+			MetricFingerprint: fp,
+			StartTimeUnix:     nanosToTime(dp.GetStartTimeUnixNano()),
+			TimeUnix:          nanosToTime(dp.GetTimeUnixNano()),
+			Value:             numberDataPointValue(dp),
+			Flags:             dp.GetFlags(),
+		}
+	},
+}
+
+// MapGaugeRows converts ResourceMetrics into deduplicated MetadataRows and slim GaugeRows.
+func MapGaugeRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []GaugeRow) {
+	return mapMetricRows(rm, gaugeMapper)
+}
+
+// --- Sum ---
+
+var sumMapper = dataPointMapper[*metricspb.NumberDataPoint, SumRow]{
+	getDataPoints: func(m *metricspb.Metric) []*metricspb.NumberDataPoint {
+		if s := m.GetSum(); s != nil {
+			return s.GetDataPoints()
+		}
+		return nil
+	},
+	getAttributes: func(dp *metricspb.NumberDataPoint) []*commonpb.KeyValue {
+		return dp.GetAttributes()
+	},
+	buildRow: func(fp uint64, dp *metricspb.NumberDataPoint, metric *metricspb.Metric) SumRow {
+		return SumRow{
+			MetricFingerprint:      fp,
+			StartTimeUnix:          nanosToTime(dp.GetStartTimeUnixNano()),
+			TimeUnix:               nanosToTime(dp.GetTimeUnixNano()),
+			Value:                  numberDataPointValue(dp),
+			Flags:                  dp.GetFlags(),
+			AggregationTemporality: int32(metric.GetSum().GetAggregationTemporality()),
+			IsMonotonic:            metric.GetSum().GetIsMonotonic(),
+		}
+	},
+}
+
+// MapSumRows converts ResourceMetrics into deduplicated MetadataRows and slim SumRows.
+func MapSumRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []SumRow) {
+	return mapMetricRows(rm, sumMapper)
+}
+
+// --- Histogram ---
+
+var histogramMapper = dataPointMapper[*metricspb.HistogramDataPoint, HistogramRow]{
+	getDataPoints: func(m *metricspb.Metric) []*metricspb.HistogramDataPoint {
+		if h := m.GetHistogram(); h != nil {
+			return h.GetDataPoints()
+		}
+		return nil
+	},
+	getAttributes: func(dp *metricspb.HistogramDataPoint) []*commonpb.KeyValue {
+		return dp.GetAttributes()
+	},
+	buildRow: func(fp uint64, dp *metricspb.HistogramDataPoint, metric *metricspb.Metric) HistogramRow {
+		return HistogramRow{
+			MetricFingerprint:      fp,
+			StartTimeUnix:          nanosToTime(dp.GetStartTimeUnixNano()),
+			TimeUnix:               nanosToTime(dp.GetTimeUnixNano()),
+			Count:                  dp.GetCount(),
+			Sum:                    dp.GetSum(),
+			BucketCounts:           dp.GetBucketCounts(),
+			ExplicitBounds:         dp.GetExplicitBounds(),
+			Min:                    dp.GetMin(),
+			Max:                    dp.GetMax(),
+			Flags:                  dp.GetFlags(),
+			AggregationTemporality: int32(metric.GetHistogram().GetAggregationTemporality()),
+		}
+	},
+}
+
+// MapHistogramRows converts ResourceMetrics into deduplicated MetadataRows and slim HistogramRows.
+func MapHistogramRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []HistogramRow) {
+	return mapMetricRows(rm, histogramMapper)
+}
+
+// --- Exponential Histogram ---
+
+var expHistogramMapper = dataPointMapper[*metricspb.ExponentialHistogramDataPoint, ExponentialHistogramRow]{
+	getDataPoints: func(m *metricspb.Metric) []*metricspb.ExponentialHistogramDataPoint {
+		if eh := m.GetExponentialHistogram(); eh != nil {
+			return eh.GetDataPoints()
+		}
+		return nil
+	},
+	getAttributes: func(dp *metricspb.ExponentialHistogramDataPoint) []*commonpb.KeyValue {
+		return dp.GetAttributes()
+	},
+	buildRow: func(fp uint64, dp *metricspb.ExponentialHistogramDataPoint, metric *metricspb.Metric) ExponentialHistogramRow {
+		positive := dp.GetPositive()
+		negative := dp.GetNegative()
+		return ExponentialHistogramRow{
+			MetricFingerprint:      fp,
+			StartTimeUnix:          nanosToTime(dp.GetStartTimeUnixNano()),
+			TimeUnix:               nanosToTime(dp.GetTimeUnixNano()),
+			Count:                  dp.GetCount(),
+			Sum:                    dp.GetSum(),
+			Scale:                  dp.GetScale(),
+			ZeroCount:              dp.GetZeroCount(),
+			PositiveOffset:         positive.GetOffset(),
+			PositiveBucketCounts:   positive.GetBucketCounts(),
+			NegativeOffset:         negative.GetOffset(),
+			NegativeBucketCounts:   negative.GetBucketCounts(),
+			Min:                    dp.GetMin(),
+			Max:                    dp.GetMax(),
+			Flags:                  dp.GetFlags(),
+			AggregationTemporality: int32(metric.GetExponentialHistogram().GetAggregationTemporality()),
+		}
+	},
+}
+
+// MapExponentialHistogramRows converts ResourceMetrics into deduplicated MetadataRows and slim ExponentialHistogramRows.
+func MapExponentialHistogramRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []ExponentialHistogramRow) {
+	return mapMetricRows(rm, expHistogramMapper)
+}
+
+// --- Summary ---
+
+var summaryMapper = dataPointMapper[*metricspb.SummaryDataPoint, SummaryRow]{
+	getDataPoints: func(m *metricspb.Metric) []*metricspb.SummaryDataPoint {
+		if s := m.GetSummary(); s != nil {
+			return s.GetDataPoints()
+		}
+		return nil
+	},
+	getAttributes: func(dp *metricspb.SummaryDataPoint) []*commonpb.KeyValue {
+		return dp.GetAttributes()
+	},
+	buildRow: func(fp uint64, dp *metricspb.SummaryDataPoint, _ *metricspb.Metric) SummaryRow {
+		quantiles := dp.GetQuantileValues()
+		quantileSlice := make([]float64, len(quantiles))
+		valueSlice := make([]float64, len(quantiles))
+		for i, qv := range quantiles {
+			quantileSlice[i] = qv.GetQuantile()
+			valueSlice[i] = qv.GetValue()
+		}
+		return SummaryRow{
+			MetricFingerprint:       fp,
+			StartTimeUnix:           nanosToTime(dp.GetStartTimeUnixNano()),
+			TimeUnix:                nanosToTime(dp.GetTimeUnixNano()),
+			Count:                   dp.GetCount(),
+			Sum:                     dp.GetSum(),
+			ValueAtQuantileQuantile: quantileSlice,
+			ValueAtQuantileValue:    valueSlice,
+			Flags:                   dp.GetFlags(),
+		}
+	},
+}
+
+// MapSummaryRows converts ResourceMetrics into deduplicated MetadataRows and slim SummaryRows.
+func MapSummaryRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []SummaryRow) {
+	return mapMetricRows(rm, summaryMapper)
 }
