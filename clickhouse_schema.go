@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS otel_metrics_gauge (
 ) ENGINE MergeTree()
 PARTITION BY toDate(TimeUnix)
 ORDER BY (MetricFingerprint, toUnixTimestamp64Nano(TimeUnix))
+TTL toDate(TimeUnix) + INTERVAL 30 DAY DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 `
 
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS otel_metrics_sum (
 ) ENGINE MergeTree()
 PARTITION BY toDate(TimeUnix)
 ORDER BY (MetricFingerprint, toUnixTimestamp64Nano(TimeUnix))
+TTL toDate(TimeUnix) + INTERVAL 30 DAY DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 `
 
@@ -73,6 +75,7 @@ CREATE TABLE IF NOT EXISTS otel_metrics_histogram (
 ) ENGINE MergeTree()
 PARTITION BY toDate(TimeUnix)
 ORDER BY (MetricFingerprint, toUnixTimestamp64Nano(TimeUnix))
+TTL toDate(TimeUnix) + INTERVAL 30 DAY DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 `
 
@@ -96,6 +99,7 @@ CREATE TABLE IF NOT EXISTS otel_metrics_exponential_histogram (
 ) ENGINE MergeTree()
 PARTITION BY toDate(TimeUnix)
 ORDER BY (MetricFingerprint, toUnixTimestamp64Nano(TimeUnix))
+TTL toDate(TimeUnix) + INTERVAL 30 DAY DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 `
 
@@ -114,5 +118,6 @@ CREATE TABLE IF NOT EXISTS otel_metrics_summary (
 ) ENGINE MergeTree()
 PARTITION BY toDate(TimeUnix)
 ORDER BY (MetricFingerprint, toUnixTimestamp64Nano(TimeUnix))
+TTL toDate(TimeUnix) + INTERVAL 30 DAY DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 `
