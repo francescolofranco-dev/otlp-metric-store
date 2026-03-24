@@ -74,17 +74,64 @@ type dataPointMapper[DP any, Row any] struct {
 	buildRow      func(uint64, DP, *metricspb.Metric) Row
 }
 
-// mapMetricRows is the generic core of all Map*Rows functions. It walks the
-// resource/scope/metric hierarchy, deduplicates metadata by fingerprint, and
-// delegates type-specific work to the mapper callbacks.
-func mapMetricRows[DP any, Row any](
-	resourceMetrics []*metricspb.ResourceMetrics,
+// MappedMetrics holds the results of a single-pass mapping over all metric types.
+type MappedMetrics struct {
+	Metadata          []MetadataRow
+	GaugeRows         []GaugeRow
+	SumRows           []SumRow
+	HistogramRows     []HistogramRow
+	ExpHistogramRows  []ExponentialHistogramRow
+	SummaryRows       []SummaryRow
+}
+
+// mapDataPoints extracts data-point rows from a single metric using the given mapper callbacks,
+// reusing pre-computed resource/scope context. It appends metadata and data rows to the provided slices.
+func mapDataPoints[DP any, Row any](
+	metric *metricspb.Metric,
 	m dataPointMapper[DP, Row],
-) ([]MetadataRow, []Row) {
+	svcName string, resAttrs map[string]string, resSchemaUrl string,
+	scope *commonpb.InstrumentationScope, scopeAttrs map[string]string, scopeSchemaUrl string,
+	now time.Time,
+	seen map[uint64]struct{},
+	metadataRows *[]MetadataRow,
+	dataRows *[]Row,
+) {
+	for _, dp := range m.getDataPoints(metric) {
+		dpAttrs := kvToMap(m.getAttributes(dp))
+		fp := computeFingerprint(
+			svcName, metric.GetName(), metric.GetUnit(), metric.GetDescription(),
+			resAttrs, scopeAttrs, dpAttrs,
+			scope.GetName(), scope.GetVersion(),
+		)
+		if _, ok := seen[fp]; !ok {
+			seen[fp] = struct{}{}
+			*metadataRows = append(*metadataRows, MetadataRow{
+				MetricFingerprint:     fp,
+				ServiceName:           svcName,
+				MetricName:            metric.GetName(),
+				MetricDescription:     metric.GetDescription(),
+				MetricUnit:            metric.GetUnit(),
+				ResourceAttributes:    resAttrs,
+				ResourceSchemaUrl:     resSchemaUrl,
+				ScopeName:             scope.GetName(),
+				ScopeVersion:          scope.GetVersion(),
+				ScopeAttributes:       scopeAttrs,
+				ScopeDroppedAttrCount: scope.GetDroppedAttributesCount(),
+				ScopeSchemaUrl:        scopeSchemaUrl,
+				Attributes:            dpAttrs,
+				LastSeen:              now,
+			})
+		}
+		*dataRows = append(*dataRows, m.buildRow(fp, dp, metric))
+	}
+}
+
+// MapAllMetricRows walks the resource/scope/metric hierarchy once and dispatches
+// each metric to the appropriate type-specific mapper based on which Data oneof is set.
+func MapAllMetricRows(resourceMetrics []*metricspb.ResourceMetrics) MappedMetrics {
 	now := time.Now()
 	seen := make(map[uint64]struct{})
-	var metadataRows []MetadataRow
-	var dataRows []Row
+	var result MappedMetrics
 
 	for _, rm := range resourceMetrics {
 		svcName := serviceName(rm.GetResource())
@@ -94,40 +141,25 @@ func mapMetricRows[DP any, Row any](
 		for _, sm := range rm.GetScopeMetrics() {
 			scope := sm.GetScope()
 			scopeAttrs := kvToMap(scope.GetAttributes())
+			scopeSchemaUrl := sm.GetSchemaUrl()
 
 			for _, metric := range sm.GetMetrics() {
-				for _, dp := range m.getDataPoints(metric) {
-					dpAttrs := kvToMap(m.getAttributes(dp))
-					fp := computeFingerprint(
-						svcName, metric.GetName(), metric.GetUnit(), metric.GetDescription(),
-						resAttrs, scopeAttrs, dpAttrs,
-						scope.GetName(), scope.GetVersion(),
-					)
-					if _, ok := seen[fp]; !ok {
-						seen[fp] = struct{}{}
-						metadataRows = append(metadataRows, MetadataRow{
-							MetricFingerprint:     fp,
-							ServiceName:           svcName,
-							MetricName:            metric.GetName(),
-							MetricDescription:     metric.GetDescription(),
-							MetricUnit:            metric.GetUnit(),
-							ResourceAttributes:    resAttrs,
-							ResourceSchemaUrl:     resSchemaUrl,
-							ScopeName:             scope.GetName(),
-							ScopeVersion:          scope.GetVersion(),
-							ScopeAttributes:       scopeAttrs,
-							ScopeDroppedAttrCount: scope.GetDroppedAttributesCount(),
-							ScopeSchemaUrl:        sm.GetSchemaUrl(),
-							Attributes:            dpAttrs,
-							LastSeen:              now,
-						})
-					}
-					dataRows = append(dataRows, m.buildRow(fp, dp, metric))
+				switch {
+				case metric.GetGauge() != nil:
+					mapDataPoints(metric, gaugeMapper, svcName, resAttrs, resSchemaUrl, scope, scopeAttrs, scopeSchemaUrl, now, seen, &result.Metadata, &result.GaugeRows)
+				case metric.GetSum() != nil:
+					mapDataPoints(metric, sumMapper, svcName, resAttrs, resSchemaUrl, scope, scopeAttrs, scopeSchemaUrl, now, seen, &result.Metadata, &result.SumRows)
+				case metric.GetHistogram() != nil:
+					mapDataPoints(metric, histogramMapper, svcName, resAttrs, resSchemaUrl, scope, scopeAttrs, scopeSchemaUrl, now, seen, &result.Metadata, &result.HistogramRows)
+				case metric.GetExponentialHistogram() != nil:
+					mapDataPoints(metric, expHistogramMapper, svcName, resAttrs, resSchemaUrl, scope, scopeAttrs, scopeSchemaUrl, now, seen, &result.Metadata, &result.ExpHistogramRows)
+				case metric.GetSummary() != nil:
+					mapDataPoints(metric, summaryMapper, svcName, resAttrs, resSchemaUrl, scope, scopeAttrs, scopeSchemaUrl, now, seen, &result.Metadata, &result.SummaryRows)
 				}
 			}
 		}
 	}
-	return metadataRows, dataRows
+	return result
 }
 
 // --- Gauge ---
@@ -155,7 +187,8 @@ var gaugeMapper = dataPointMapper[*metricspb.NumberDataPoint, GaugeRow]{
 
 // MapGaugeRows converts ResourceMetrics into deduplicated MetadataRows and slim GaugeRows.
 func MapGaugeRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []GaugeRow) {
-	return mapMetricRows(rm, gaugeMapper)
+	m := MapAllMetricRows(rm)
+	return m.Metadata, m.GaugeRows
 }
 
 // --- Sum ---
@@ -185,7 +218,8 @@ var sumMapper = dataPointMapper[*metricspb.NumberDataPoint, SumRow]{
 
 // MapSumRows converts ResourceMetrics into deduplicated MetadataRows and slim SumRows.
 func MapSumRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []SumRow) {
-	return mapMetricRows(rm, sumMapper)
+	m := MapAllMetricRows(rm)
+	return m.Metadata, m.SumRows
 }
 
 // --- Histogram ---
@@ -219,7 +253,8 @@ var histogramMapper = dataPointMapper[*metricspb.HistogramDataPoint, HistogramRo
 
 // MapHistogramRows converts ResourceMetrics into deduplicated MetadataRows and slim HistogramRows.
 func MapHistogramRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []HistogramRow) {
-	return mapMetricRows(rm, histogramMapper)
+	m := MapAllMetricRows(rm)
+	return m.Metadata, m.HistogramRows
 }
 
 // --- Exponential Histogram ---
@@ -259,7 +294,8 @@ var expHistogramMapper = dataPointMapper[*metricspb.ExponentialHistogramDataPoin
 
 // MapExponentialHistogramRows converts ResourceMetrics into deduplicated MetadataRows and slim ExponentialHistogramRows.
 func MapExponentialHistogramRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []ExponentialHistogramRow) {
-	return mapMetricRows(rm, expHistogramMapper)
+	m := MapAllMetricRows(rm)
+	return m.Metadata, m.ExpHistogramRows
 }
 
 // --- Summary ---
@@ -297,5 +333,6 @@ var summaryMapper = dataPointMapper[*metricspb.SummaryDataPoint, SummaryRow]{
 
 // MapSummaryRows converts ResourceMetrics into deduplicated MetadataRows and slim SummaryRows.
 func MapSummaryRows(rm []*metricspb.ResourceMetrics) ([]MetadataRow, []SummaryRow) {
-	return mapMetricRows(rm, summaryMapper)
+	m := MapAllMetricRows(rm)
+	return m.Metadata, m.SummaryRows
 }

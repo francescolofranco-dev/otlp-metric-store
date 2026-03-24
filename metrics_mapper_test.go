@@ -154,16 +154,16 @@ func TestMapGaugeRows_NilOrEmptyInput_ReturnsEmptySlices(t *testing.T) {
 	}
 }
 
-func TestMapGaugeRows_SumMetricInput_ReturnsEmptySlices(t *testing.T) {
+func TestMapGaugeRows_SumMetricInput_ReturnsNoGaugeRows(t *testing.T) {
 	rm := buildResourceMetrics(sumMetric("requests",
 		metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, true,
 		numberDP(100),
 	))
 
-	metadata, rows := MapGaugeRows(rm)
+	_, rows := MapGaugeRows(rm)
 
-	if len(metadata) != 0 || len(rows) != 0 {
-		t.Errorf("expected no rows for non-gauge metric, got %d metadata + %d rows", len(metadata), len(rows))
+	if len(rows) != 0 {
+		t.Errorf("expected no gauge rows for sum metric input, got %d", len(rows))
 	}
 }
 
@@ -380,6 +380,65 @@ func TestMapSummaryRows_ThreeQuantiles_ExtractsCountSumAndQuantilePairs(t *testi
 			t.Errorf("quantile[%d]: got q=%f v=%f, want q=%f v=%f",
 				i, r.ValueAtQuantileQuantile[i], r.ValueAtQuantileValue[i], wantQ[i], wantV[i])
 		}
+	}
+}
+
+// --- MapAllMetricRows (single-pass production path) ---
+
+func TestMapAllMetricRows_MixedTypes_SinglePassProducesCorrectRowsPerType(t *testing.T) {
+	rm := buildResourceMetrics(
+		gaugeMetric("cpu", numberDP(42.5, strAttr("env", "prod"))),
+		sumMetric("requests", metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, true, numberDP(100, strAttr("method", "GET"))),
+	)
+
+	mapped := MapAllMetricRows(rm)
+
+	if len(mapped.GaugeRows) != 1 {
+		t.Fatalf("expected 1 gauge row, got %d", len(mapped.GaugeRows))
+	}
+	if len(mapped.SumRows) != 1 {
+		t.Fatalf("expected 1 sum row, got %d", len(mapped.SumRows))
+	}
+	if len(mapped.HistogramRows) != 0 || len(mapped.ExpHistogramRows) != 0 || len(mapped.SummaryRows) != 0 {
+		t.Error("expected no rows for absent metric types")
+	}
+	if len(mapped.Metadata) != 2 {
+		t.Fatalf("expected 2 metadata rows, got %d", len(mapped.Metadata))
+	}
+	if mapped.GaugeRows[0].Value != 42.5 {
+		t.Errorf("gauge Value: got %f, want 42.5", mapped.GaugeRows[0].Value)
+	}
+	if mapped.SumRows[0].Value != 100 {
+		t.Errorf("sum Value: got %f, want 100", mapped.SumRows[0].Value)
+	}
+}
+
+func TestMapAllMetricRows_NilInput_ReturnsEmptyResult(t *testing.T) {
+	mapped := MapAllMetricRows(nil)
+
+	if len(mapped.Metadata) != 0 || len(mapped.GaugeRows) != 0 || len(mapped.SumRows) != 0 ||
+		len(mapped.HistogramRows) != 0 || len(mapped.ExpHistogramRows) != 0 || len(mapped.SummaryRows) != 0 {
+		t.Error("expected all slices to be empty for nil input")
+	}
+}
+
+func TestMapAllMetricRows_DeduplicatesMetadataAcrossTypes(t *testing.T) {
+	// A gauge and a sum with the same identity fields (same name, same attributes)
+	// would produce different fingerprints because metric name differs.
+	// But two data points with identical identity within the same type should dedup.
+	env := strAttr("env", "prod")
+	rm := buildResourceMetrics(gaugeMetric("cpu",
+		numberDP(40.0, env),
+		numberDP(42.5, env),
+	))
+
+	mapped := MapAllMetricRows(rm)
+
+	if len(mapped.Metadata) != 1 {
+		t.Fatalf("expected 1 deduplicated metadata row, got %d", len(mapped.Metadata))
+	}
+	if len(mapped.GaugeRows) != 2 {
+		t.Fatalf("expected 2 gauge rows, got %d", len(mapped.GaugeRows))
 	}
 }
 
